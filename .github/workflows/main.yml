@@ -1,7 +1,9 @@
 name: Manual Build
 
+name: Build GFXBench Android APK
+
 on:
-  workflow_dispatch:  # 手动触发
+  workflow_dispatch:
     inputs:
       build_arch:
         description: '选择架构'
@@ -15,6 +17,9 @@ on:
 env:
   CONFIG: 'Release'
   APPLICATION_TYPE: 'gui'
+  ANDROID_NDK_VERSION: '28.0.12674087'
+  ANDROID_API_LEVEL: '35'
+  ANDROID_BUILD_TOOLS: '35.0.0'
 
 jobs:
   build:
@@ -34,7 +39,7 @@ jobs:
         echo "📂 scripts目录:"
         ls -la scripts/ || echo "scripts目录不存在"
     
-    # 3. 安装基本工具
+    # 3. 安装基本工具（修复版）
     - name: Setup basic tools
       run: |
         sudo apt-get update
@@ -47,10 +52,25 @@ jobs:
           python3 \
           curl \
           unzip \
-          zip
+          zip \
+          git
+        
+        # 安装官方要求的CMake 3.21
+        echo "📦 安装CMake 3.21（官方要求）..."
+        wget -q https://github.com/Kitware/CMake/releases/download/v3.21.0/cmake-3.21.0-linux-x86_64.tar.gz
+        tar -xzf cmake-3.21.0-linux-x86_64.tar.gz
+        sudo cp -r cmake-3.21.0-linux-x86_64/* /usr/
+        rm -rf cmake-3.21.0-linux-x86_64*
+        
+        # 验证版本
+        echo "✅ 工具版本:"
+        cmake --version
+        swig -version
+        java -version
     
-    # 4. 安装Android SDK和NDK（官方要求版本）
-    - name: Install Android SDK/NDK
+    # 4. 安装Android SDK和NDK（修复版）
+    - name: Install Android SDK/NDK (Fixed)
+      id: android-setup
       run: |
         echo "🔧 安装Android开发环境..."
         
@@ -59,36 +79,58 @@ jobs:
         export ANDROID_SDK_ROOT=~/android-sdk
         export ANDROID_HOME=~/android-sdk
         
-        # 下载命令行工具
-        SDK_URL="https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
-        curl -L -o cmdline-tools.zip "$SDK_URL"
-        unzip -q cmdline-tools.zip -d "$ANDROID_SDK_ROOT"
-        mv "$ANDROID_SDK_ROOT/cmdline-tools" "$ANDROID_SDK_ROOT/cmdline-tools/latest"
+        echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
+        echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
         
-        # 设置PATH
+        # 方法1：直接下载命令行工具到正确位置
+        echo "⬇️ 下载Android命令行工具..."
+        
+        # 创建临时目录
+        mkdir -p /tmp/android-cmdline
+        cd /tmp/android-cmdline
+        
+        # 下载命令行工具
+        wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+        unzip -q commandlinetools-linux-11076708_latest.zip
+        
+        # 移动到正确位置
+        mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
+        mv cmdline-tools "$ANDROID_SDK_ROOT/cmdline-tools/latest"
+        
+        # 清理临时目录
+        cd ~
+        rm -rf /tmp/android-cmdline
+        
+        # 添加到PATH
         echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
         echo "$ANDROID_SDK_ROOT/platform-tools" >> $GITHUB_PATH
         
-        # 接受许可证
-        yes | sdkmanager --licenses
+        # 验证sdkmanager可用
+        echo "🔍 验证Android工具..."
+        ls -la "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/"
         
-        # 安装官方要求的组件（严格按版本）
-        sdkmanager --install \
-          "ndk;28.0.12674087" \
-          "build-tools;35.0.0" \
-          "platforms;android-35" \
+        # 接受许可证（非交互模式）
+        echo "📝 接受Android许可证..."
+        yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --licenses || true
+        
+        # 安装官方要求的组件
+        echo "📦 安装Android组件..."
+        $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --install \
+          "ndk;${{ env.ANDROID_NDK_VERSION }}" \
+          "build-tools;${{ env.ANDROID_BUILD_TOOLS }}" \
+          "platforms;android-${{ env.ANDROID_API_LEVEL }}" \
           "platform-tools" \
           "cmdline-tools;latest"
         
         # 设置环境变量
-        export ANDROID_NDK="$ANDROID_SDK_ROOT/ndk/28.0.12674087"
+        export ANDROID_NDK="$ANDROID_SDK_ROOT/ndk/${{ env.ANDROID_NDK_VERSION }}"
         export NG_CMAKE_TOOLCHAIN_FILE="$ANDROID_NDK/build/cmake/android.toolchain.cmake"
         
         echo "ANDROID_NDK=$ANDROID_NDK" >> $GITHUB_ENV
-        echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
         echo "NG_CMAKE_TOOLCHAIN_FILE=$NG_CMAKE_TOOLCHAIN_FILE" >> $GITHUB_ENV
         
         echo "✅ Android环境安装完成"
+        echo "ANDROID_NDK路径: $ANDROID_NDK"
     
     # 5. 修复常见问题
     - name: Fix common issues
@@ -98,20 +140,23 @@ jobs:
         # 给所有sh文件执行权限
         find . -name "*.sh" -exec chmod +x {} \; 2>/dev/null || true
         
-        # 检查是否有build脚本
-        if [ -f "scripts/build-3rdparty.sh" ]; then
-          echo "✅ 找到build-3rdparty.sh"
-          chmod +x scripts/build-3rdparty.sh
-        else
-          echo "❌ 找不到build-3rdparty.sh，请检查仓库"
-          ls -la scripts/
+        # 修复openssl-cmake依赖（如果需要）
+        if [ ! -d "3rdparty/openssl-cmake" ] && [ -d "3rdparty" ]; then
+          echo "📦 修复openssl-cmake依赖..."
+          cd 3rdparty
+          git clone --depth 1 https://github.com/janbar/openssl-cmake.git 2>/dev/null || true
+          cd ..
         fi
         
-        if [ -f "scripts/build.sh" ]; then
-          echo "✅ 找到build.sh"
-          chmod +x scripts/build.sh
+        # 检查构建脚本
+        echo "📋 检查构建脚本:"
+        if [ -f "scripts/build-3rdparty.sh" ]; then
+          echo "✅ 找到 build-3rdparty.sh"
+          ls -la scripts/build-3rdparty.sh
         else
-          echo "❌ 找不到build.sh，请检查仓库"
+          echo "❌ 缺少 build-3rdparty.sh"
+          echo "当前scripts目录:"
+          ls -la scripts/ 2>/dev/null || echo "scripts目录不存在"
         fi
     
     # 6. 执行官方构建步骤
@@ -122,33 +167,68 @@ jobs:
         APPLICATION_TYPE: ${{ env.APPLICATION_TYPE }}
         WORKSPACE: ${{ github.workspace }}
         BUNDLE_DATA: "true"
+        ANDROID_NDK: ${{ env.ANDROID_NDK }}
+        ANDROID_HOME: ${{ env.ANDROID_HOME }}
+        NG_CMAKE_TOOLCHAIN_FILE: ${{ env.NG_CMAKE_TOOLCHAIN_FILE }}
       run: |
         echo "🚀 开始构建GFXBench..."
         echo "架构: $PLATFORM"
         echo "配置: $CONFIG"
         echo "类型: $APPLICATION_TYPE"
+        echo "Android NDK: $ANDROID_NDK"
+        
+        # 检查环境变量
+        echo "🔍 环境检查:"
+        printenv | grep -E "(PLATFORM|CONFIG|ANDROID|WORKSPACE|CMAKE)" || true
         
         # 第一步：构建第三方库
         echo "📦 第一步：构建第三方库"
-        bash scripts/build-3rdparty.sh 2>&1 | tee build-3rdparty.log
         
-        if [ ${PIPESTATUS[0]} -ne 0 ]; then
-          echo "❌ 第三方库构建失败"
-          tail -50 build-3rdparty.log
+        # 确保在项目根目录
+        cd "$WORKSPACE"
+        
+        if [ -f "scripts/build-3rdparty.sh" ]; then
+          # 显示脚本内容前几行（调试）
+          echo "📜 构建脚本前10行:"
+          head -10 scripts/build-3rdparty.sh
+          
+          # 执行构建
+          echo "▶️ 执行 build-3rdparty.sh"
+          bash scripts/build-3rdparty.sh
+          
+          if [ $? -eq 0 ]; then
+            echo "✅ 第三方库构建完成"
+          else
+            echo "❌ 第三方库构建失败"
+            exit 1
+          fi
+        else
+          echo "❌ 找不到 scripts/build-3rdparty.sh"
           exit 1
         fi
-        echo "✅ 第三方库构建完成"
         
         # 第二步：构建主程序
         echo "📱 第二步：构建主程序"
-        bash scripts/build.sh 2>&1 | tee build-main.log
         
-        if [ ${PIPESTATUS[0]} -ne 0 ]; then
-          echo "❌ 主程序构建失败"
-          tail -50 build-main.log
+        if [ -f "scripts/build.sh" ]; then
+          # 显示脚本内容前几行（调试）
+          echo "📜 构建脚本前10行:"
+          head -10 scripts/build.sh
+          
+          # 执行构建
+          echo "▶️ 执行 build.sh"
+          bash scripts/build.sh
+          
+          if [ $? -eq 0 ]; then
+            echo "✅ 主程序构建完成"
+          else
+            echo "❌ 主程序构建失败"
+            exit 1
+          fi
+        else
+          echo "❌ 找不到 scripts/build.sh"
           exit 1
         fi
-        echo "✅ 主程序构建完成"
         
         # 检查APK
         echo "🔍 查找生成的APK文件..."
@@ -157,20 +237,18 @@ jobs:
           ls -lh "$apk"
         done
         
-        # 检查tfw-pkg目录（官方输出目录）
-        if [ -d "tfw-pkg" ]; then
-          echo "📁 tfw-pkg目录内容:"
-          ls -la tfw-pkg/
-        fi
+        # 检查输出目录
+        echo "📁 检查输出目录:"
+        find . -type d -name "tfw*" -o -name "out" 2>/dev/null | head -5
     
     # 7. 上传生成的APK
     - name: Upload APK artifact
+      if: success()
       uses: actions/upload-artifact@v4
       with:
-        name: GFXBench-APK
+        name: GFXBench-APK-${{ github.event.inputs.build_arch }}
         path: |
-          tfw-pkg/*.apk
-          out/build/*/testfw/*.apk
-          *.apk
+          ${{ github.workspace }}/tfw-pkg/
+          ${{ github.workspace }}/out/build/*/testfw/
         retention-days: 7
         if-no-files-found: warn
