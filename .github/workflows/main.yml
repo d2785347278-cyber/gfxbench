@@ -13,6 +13,11 @@ on:
 env:
   CONFIG: 'Release'
   WORKSPACE: ${{ github.workspace }}
+  # 官方要求的核心环境变量
+  APPLICATION_TYPE: 'gui'  # 官方：gui是带完整UI的可安装版
+  PLATFORM: 'android-arm64-v8a'  # 官方指定架构
+  ANDROID_NDK_VERSION: '28.0.12674087'  # 官方测试通过的NDK版本
+  ANDROID_API_LEVEL: '35'  # 官方指定API版本
 
 jobs:
   build:
@@ -43,92 +48,104 @@ jobs:
             runner: ubuntu-22.04
     runs-on: ${{ matrix.runner }}
     steps:
-      # 1. 拉取代码（不处理子模块）
+      # 1. 拉取代码（官方无特殊子模块要求，仅拉取主代码）
       - name: Checkout code
         if: ${{ matrix.platform == 'android' }}
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # 2. 完全绕过子模块，手动克隆openssl-cmake（核心修复）
-      - name: Manual Clone openssl-cmake
-        if: ${{ matrix.platform == 'android' }}
-        run: |
-          mkdir -p 3rdparty
-          # 直接克隆官方openssl仓库到指定目录
-          if [ ! -d "3rdparty/openssl-cmake" ]; then
-            git clone https://github.com/openssl/openssl.git 3rdparty/openssl-cmake
-          fi
-          echo "Success: openssl-cmake directory created."
-
-      # 3. 配置Java环境
-      - name: Setup Java 17
-        if: ${{ matrix.platform == 'android' }}
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-          cache: 'gradle'
-
-      # 4. 配置安卓环境（启用完整版）
-      - name: Setup Android Environment
-        if: ${{ matrix.platform == 'android' }}
-        run: |
-          echo "SDKP=/tmp/android_sdk" >> $GITHUB_ENV
-          echo "ANDROID_NDK=$HOME/android-sdk/ndk/28.0.12674087" >> $GITHUB_ENV
-          echo "ANDROID_HOME=$HOME/android-sdk" >> $GITHUB_ENV
-          echo "NG_CMAKE_TOOLCHAIN_FILE=$HOME/android-sdk/ndk/28.0.12674087/build/cmake/android.toolchain.cmake" >> $GITHUB_ENV
-          echo "CONFIG=Release" >> $GITHUB_ENV
-          echo "WORKSPACE=${{ github.workspace }}" >> $GITHUB_ENV
-          echo "BUNDLE_DATA=true" >> $GITHUB_ENV
-          echo "COMMUNITY_BUILD=true" >> $GITHUB_ENV
-          echo "PRODUCT_ID=gfxbench" >> $GITHUB_ENV
-          echo "MAKEFLAGS=-j$(nproc)" >> $GITHUB_ENV
-          echo "ANDROID_SDK_ROOT=/tmp/android_sdk/" >> $GITHUB_ENV
-          echo "PLATFORM=android" >> $GITHUB_ENV
-          echo "PLATFORMS=android-arm64-v8a" >> $GITHUB_ENV
-          echo "CUDAToolkit_ROOT=/usr/local/cuda" >> $GITHUB_ENV
-
-      # 5. 安装依赖
-      - name: Install Linux/Android Dependencies
+      # 2. 安装官方要求的基础依赖
+      - name: Install Base Dependencies (Ubuntu)
         if: ${{ matrix.platform == 'android' }}
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
-            cmake build-essential ninja-build \
-            libwayland-dev wayland-protocols libxkbcommon-dev libegl1-mesa-dev libgles2-mesa-dev \
-            bison pkg-config libxinerama-dev libxcursor-dev libxrandr-dev libxi-dev libglu1-mesa-dev xorg-dev \
-            curl ca-certificates unzip openjdk-17-jdk swig python-is-python3
-          sudo update-alternatives --set java /usr/lib/jvm/java-17-openjdk-amd64/bin/java || true
-          sudo update-alternatives --set javac /usr/lib/jvm/java-17-openjdk-amd64/bin/javac || true
-          java -version
+            cmake build-essential ninja-build swig openjdk-17-jdk \
+            curl ca-certificates unzip python-is-python3 ccache
+          # 配置ccache（官方提到NDK支持ccache加速）
+          echo "NDK_CCACHE=$(which ccache)" >> $GITHUB_ENV
 
-      # 6. 安装安卓依赖
-      - name: Install Android Dependencies
+      # 3. 安装Android SDK/NDK（严格按官方版本）
+      - name: Install Android SDK/NDK (Official Versions)
         if: ${{ matrix.platform == 'android' }}
         run: |
-          ./doc/android_deps.sh
+          # 创建SDK目录
+          mkdir -p $HOME/android-sdk
+          export ANDROID_HOME=$HOME/android-sdk
+          export PATH=$ANDROID_HOME/cmdline-tools/latest/bin:$PATH
 
-      # 7. 构建安卓APK
-      - name: Build Android APK
+          # 下载cmdline-tools
+          curl -o cmdline-tools.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          unzip -q cmdline-tools.zip -d $ANDROID_HOME/cmdline-tools
+          mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest
+
+          # 接受SDK许可（非交互模式）
+          yes | sdkmanager --licenses
+
+          # 安装官方要求的组件
+          sdkmanager --install \
+            "ndk;${{ env.ANDROID_NDK_VERSION }}" \
+            "build-tools;${{ env.ANDROID_API_LEVEL }}.0.0" \
+            "platforms;android-${{ env.ANDROID_API_LEVEL }}" \
+            "platform-tools" \
+            "cmdline-tools;latest"
+
+          # 设置官方要求的环境变量
+          echo "ANDROID_NDK=$ANDROID_HOME/ndk/${{ env.ANDROID_NDK_VERSION }}" >> $GITHUB_ENV
+          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
+          echo "NG_CMAKE_TOOLCHAIN_FILE=$ANDROID_HOME/ndk/${{ env.ANDROID_NDK_VERSION }}/build/cmake/android.toolchain.cmake" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> $GITHUB_ENV
+
+      # 4. 手动修复openssl-cmake依赖（官方build-3rdparty.sh的前置）
+      - name: Fix openssl-cmake Dependency
         if: ${{ matrix.platform == 'android' }}
         run: |
-          export COMMUNITY_BUILD=true
+          mkdir -p 3rdparty
+          # 克隆带CMakeLists.txt的openssl-cmake（适配官方build-3rdparty.sh）
+          if [ ! -d "3rdparty/openssl-cmake" ]; then
+            git clone https://github.com/janbar/openssl-cmake.git 3rdparty/openssl-cmake
+          fi
+
+      # 5. 构建第三方库（官方第一步）
+      - name: Build 3rdparty Libraries (Official Step 1)
+        if: ${{ matrix.platform == 'android' }}
+        run: |
+          export BUNDLE_DATA=true  # 官方：打包测试数据
+          export WORKSPACE=${{ github.workspace }}
+          export PLATFORM=${{ env.PLATFORM }}
+          export CONFIG=${{ env.CONFIG }}
+          export APPLICATION_TYPE=${{ env.APPLICATION_TYPE }}
+          
+          # 执行官方的第三方库构建脚本
+          ./scripts/build-3rdparty.sh
+
+      # 6. 构建GFXBench主程序（官方第二步）
+      - name: Build GFXBench (Official Step 2)
+        if: ${{ matrix.platform == 'android' }}
+        run: |
           export BUNDLE_DATA=true
-          export PRODUCT_ID=gfxbench
-          ./scripts/build-multiarch-apk.sh
-          find ${{ github.workspace }} -name "*.apk" -type f
-          ls -la ${{ github.workspace }}/archive/
+          export WORKSPACE=${{ github.workspace }}
+          export PLATFORM=${{ env.PLATFORM }}
+          export CONFIG=${{ env.CONFIG }}
+          export APPLICATION_TYPE=${{ env.APPLICATION_TYPE }}
+          
+          # 执行官方的主构建脚本
+          ./scripts/build.sh
 
-      # 8. 上传APK
-      - name: Upload Android APK
+          # 打印APK路径（官方说明：APK在tfw-pkg目录）
+          find ${{ github.workspace }} -name "*.apk" -type f
+          ls -la ${{ github.workspace }}/tfw-pkg/
+
+      # 7. 上传APK（适配官方的输出路径tfw-pkg）
+      - name: Upload Android APK (Official Path)
         if: ${{ matrix.platform == 'android' }}
         uses: actions/upload-artifact@v4
         with:
           name: GFXBench-Android-APK-${{ github.run_id }}
+          # 官方说明：APK输出在tfw-pkg目录
           path: |
-            ${{ github.workspace }}/archive/**/*.apk
-            ${{ github.workspace }}/**/*.apk
+            ${{ github.workspace }}/tfw-pkg/**/*.apk
             !${{ github.workspace }}/3rdparty/**/*.apk
           retention-days: 30
           if-no-files-found: warn
