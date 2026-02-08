@@ -1,279 +1,102 @@
 name: Build GFXBench Android APK
 
 on:
-  workflow_dispatch:
-    inputs:
-      build_arch:
-        description: '选择架构'
-        required: true
-        default: 'android-arm64-v8a'
-        type: choice
-        options:
-          - android-arm64-v8a
-          - android-armv7a
-      gfx_api:
-        description: '图形API版本'
-        required: true
-        default: 'gl'
-        type: choice
-        options:
-          - 'gl'
-          - 'vulkan'
-          - 'all'
-
-env:
-  CONFIG: 'Release'
-  APPLICATION_TYPE: 'gui'
-  ANDROID_NDK_VERSION: '28.0.12674087'
-  ANDROID_API_LEVEL: '35'
-  ANDROID_BUILD_TOOLS: '35.0.0'
-  CMAKE_VERSION: '3.21.0'
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
 
 jobs:
-  build:
+  build-android:
     runs-on: ubuntu-latest
-    
+
     steps:
-    # 1. 下载源代码
     - name: Checkout code
-      uses: actions/checkout@v4
-    
-    # 2. 安装基本工具
-    - name: Setup basic tools
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          cmake \
-          ninja-build \
-          swig \
-          ccache \
-          openjdk-17-jdk \
-          python3 \
-          curl \
-          unzip \
-          zip
-        
-        # 安装CMake 3.21
-        wget -q https://github.com/Kitware/CMake/releases/download/v3.21.0/cmake-3.21.0-linux-x86_64.tar.gz
-        tar -xzf cmake-3.21.0-linux-x86_64.tar.gz
-        sudo cp -r cmake-3.21.0-linux-x86_64/* /usr/
-        rm -rf cmake-3.21.0*
-    
-    # 3. 安装Android SDK/NDK
-    - name: Install Android SDK/NDK
-      run: |
-        echo "安装Android开发环境..."
-        
-        mkdir -p ~/android-sdk
-        export ANDROID_SDK_ROOT=~/android-sdk
-        export ANDROID_HOME=~/android-sdk
-        
-        echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
-        echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
-        
-        # 下载命令行工具
-        wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
-        unzip -q commandlinetools-linux-11076708_latest.zip -d "$ANDROID_SDK_ROOT"
-        mv "$ANDROID_SDK_ROOT/cmdline-tools" "$ANDROID_SDK_ROOT/cmdline-tools/latest" 2>/dev/null || true
-        
-        # 添加到PATH
-        echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
-        
-        # 等待PATH更新
-        sleep 2
-        
-        # 接受许可证
-        yes | sdkmanager --licenses 2>/dev/null || true
-        
-        # 安装必要组件
-        sdkmanager --install \
-          "ndk;$ANDROID_NDK_VERSION" \
-          "build-tools;$ANDROID_BUILD_TOOLS" \
-          "platforms;android-$ANDROID_API_LEVEL" \
-          "platform-tools"
-        
-        # 设置NDK路径
-        ANDROID_NDK="$ANDROID_SDK_ROOT/ndk/$ANDROID_NDK_VERSION"
-        echo "ANDROID_NDK=$ANDROID_NDK" >> $GITHUB_ENV
-        
-        echo "Android环境安装完成"
-    
-    # 4. 修复CUDA问题
-    - name: Fix CUDA issue
-      run: |
-        echo "修复CUDA问题..."
-        sudo mkdir -p /usr/local/cuda/include
-        echo "// Dummy CUDA header" | sudo tee /usr/local/cuda/include/cuda.h > /dev/null
-        echo "✅ 创建了假的CUDA目录"
-        
-        # 确保脚本有执行权限
-        find . -name "*.sh" -exec chmod +x {} \; 2>/dev/null || true
-    
-    # 5. 构建第三方库
-    - name: Build 3rdparty libraries
-      env:
-        PLATFORM: ${{ github.event.inputs.build_arch }}
-        CONFIG: ${{ env.CONFIG }}
-        WORKSPACE: ${{ github.workspace }}
-      run: |
-        echo "构建第三方库..."
-        bash scripts/build-3rdparty.sh 2>&1 | tail -50
-    
-    # 6. 构建主程序
-    - name: Build main application
-      env:
-        PLATFORM: ${{ github.event.inputs.build_arch }}
-        CONFIG: ${{ env.CONFIG }}
-        APPLICATION_TYPE: ${{ env.APPLICATION_TYPE }}
-        WORKSPACE: ${{ github.workspace }}
-        BUNDLE_DATA: "false"  # 不包含测试数据
-      run: |
-        echo "构建主程序..."
-        bash scripts/build.sh 2>&1 | tail -50
-        
-        # 检查生成了什么文件
-        echo "构建输出:"
-        ls -la out/ 2>/dev/null || true
-        ls -la tfw-pkg/ 2>/dev/null || true
-    
-    # 7. 关键步骤：准备Android Gradle项目
-    - name: Prepare Android Gradle project
-      run: |
-        echo "准备Android Gradle项目..."
-        
-        # 进入app_android目录
-        cd app_android
-        
-        # 检查项目结构
-        echo "项目结构:"
-        ls -la
-        
-        # 检查gradlew权限
-        chmod +x gradlew
-        
-        # 检查build.gradle文件
-        echo "检查build.gradle文件:"
-        find . -name "*.gradle*" -type f | head -10
-        
-        # 根据选择的GFX API设置构建变体
-        echo "选择的GFX API: ${{ github.event.inputs.gfx_api }}"
-        
-        # 设置构建类型
-        BUILD_TYPE="Release"
-        
-        cd ..
-    
-    # 8. 构建APK - 使用Gradle
-    - name: Build APK with Gradle
-      run: |
-        echo "🎯 使用Gradle构建APK..."
-        
-        cd app_android
-        
-        # 根据输入的gfx_api选择构建变体
-        case "${{ github.event.inputs.gfx_api }}" in
-          "gl")
-            BUILD_VARIANT="gfxbench_gl"
-            ;;
-          "vulkan")
-            BUILD_VARIANT="gfxbench_vulkan"
-            ;;
-          "all")
-            BUILD_VARIANT="gfxbench"
-            ;;
-          *)
-            BUILD_VARIANT="gfxbench"
-            ;;
-        esac
-        
-        echo "构建变体: $BUILD_VARIANT"
-        
-        # 设置Java环境
-        export JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
-        
-        # 运行Gradle构建
-        echo "运行: ./gradlew :$BUILD_VARIANT:assembleRelease"
-        ./gradlew :$BUILD_VARIANT:assembleRelease 2>&1 | tee gradle-build.log
-        
-        # 检查构建是否成功
-        if [ ${PIPESTATUS[0]} -eq 0 ]; then
-          echo "✅ Gradle构建成功"
-        else
-          echo "❌ Gradle构建失败，查看日志..."
-          tail -100 gradle-build.log
-          
-          # 尝试构建所有变体
-          echo "尝试构建所有变体..."
-          ./gradlew assembleRelease 2>&1 | tee gradle-build-all.log
-        fi
-        
-        # 查找生成的APK
-        echo "🔍 查找APK文件..."
-        APK_FOUND=false
-        
-        # 在多个可能的位置查找APK
-        APK_PATHS=(
-          "$BUILD_VARIANT/build/outputs/apk"
-          "app-template/build/outputs/apk"
-          "build/outputs/apk"
-          "."
-        )
-        
-        for path in "${APK_PATHS[@]}"; do
-          if [ -d "$path" ]; then
-            find "$path" -name "*.apk" -type f | while read apk; do
-              echo "📦 找到APK: $apk"
-              ls -lh "$apk"
-              APK_FOUND=true
-              # 复制到工作区根目录
-              cp "$apk" "$GITHUB_WORKSPACE/" 2>/dev/null || true
-            done
-          fi
-        done
-        
-        if [ "$APK_FOUND" = false ]; then
-          echo "❌ 没有找到APK，显示目录结构..."
-          find . -type d -name "*apk*" -o -name "*build*" | head -20
-          echo "当前目录:"
-          pwd
-          ls -la
-        fi
-        
-        cd ..
-    
-    # 9. 备选方案：如果Gradle失败，尝试使用build-multiarch-apk.sh
-    - name: Alternative build with multiarch script
-      if: failure()  # 只有Gradle构建失败时才运行
-      run: |
-        echo "尝试使用build-multiarch-apk.sh..."
-        
-        # 检查脚本是否存在
-        if [ -f "scripts/build-multiarch-apk.sh" ]; then
-          echo "找到build-multiarch-apk.sh，执行..."
-          
-          # 设置环境变量
-          export WORKSPACE="$GITHUB_WORKSPACE"
-          export PLATFORMS="${{ github.event.inputs.build_arch }}"
-          export CONFIG="${{ env.CONFIG }}"
-          export APPLICATION_TYPE="${{ env.APPLICATION_TYPE }}"
-          export BUNDLE_DATA="false"
-          export BUILD_THIRDPARTY="false"  # 已经构建过第三方库
-          
-          # 执行脚本
-          bash scripts/build-multiarch-apk.sh 2>&1 | tail -100
-          
-          # 检查APK
-          find . -name "*.apk" -type f
-        else
-          echo "没有找到build-multiarch-apk.sh"
-        fi
-    
-    # 10. 上传APK
-    - name: Upload APK artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/checkout@v3
       with:
-        name: GFXBench-${{ github.event.inputs.gfx_api }}-${{ github.event.inputs.build_arch }}
+        submodules: recursive  # 这很重要！GFXBench需要子模块
+
+    - name: Setup Android Build Environment
+      uses: android-actions/setup-android@v2
+
+    - name: Install Build Tools
+      run: |
+        # 设置Java环境
+        sudo apt-get update
+        sudo apt-get install -y openjdk-17-jdk
+        
+        # 安装CMake和构建工具
+        sudo apt-get install -y cmake ninja-build swig
+        
+        # 显示版本信息
+        java -version
+        cmake --version
+        swig -version
+        
+        echo "✅ 构建工具安装完成"
+
+    - name: Build Third-party Libraries
+      run: |
+        cd $GITHUB_WORKSPACE
+        
+        # 设置环境变量
+        export WORKSPACE=$PWD
+        export PLATFORM=android-arm64-v8a
+        export CONFIG=Release
+        
+        # 构建第三方库
+        echo "开始构建第三方库..."
+        bash scripts/build-3rdparty.sh
+        
+        echo "✅ 第三方库构建完成"
+        
+      env:
+        ANDROID_NDK: ${{ env.ANDROID_NDK }}
+        ANDROID_HOME: ${{ env.ANDROID_HOME }}
+
+    - name: Build GFXBench APK
+      run: |
+        cd $GITHUB_WORKSPACE
+        
+        # 设置构建参数
+        export WORKSPACE=$PWD
+        export PLATFORM=android-arm64-v8a
+        export CONFIG=Release
+        export APPLICATION_TYPE=gui  # 构建完整GUI应用
+        
+        echo "开始构建APK..."
+        bash scripts/build.sh
+        
+        echo "✅ APK构建完成"
+        
+        # 显示构建结果
+        echo "查找生成的APK文件..."
+        find . -name "*.apk" -type f | head -10
+        
+      env:
+        ANDROID_NDK: ${{ env.ANDROID_NDK }}
+        ANDROID_HOME: ${{ env.ANDROID_HOME }}
+
+    - name: Upload APK Artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: GFXBench-Android-APK
         path: |
-          ${{ github.workspace }}/*.apk
+          **/*.apk
+          tfw-pkg/
+        if-no-files-found: warn
         retention-days: 7
-        if-no-files-found: error
+
+    - name: Show Build Summary
+      if: always()
+      run: |
+        echo "=== 构建总结 ==="
+        echo "工作流已完成！"
+        
+        if [ -d "tfw-pkg" ]; then
+          echo "✅ tfw-pkg目录已生成"
+          ls -la tfw-pkg/ | head -10
+        fi
+        
+        echo "APK文件可以在Artifacts中下载"
+        echo "============================="
