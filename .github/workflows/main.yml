@@ -43,25 +43,23 @@ jobs:
             runner: ubuntu-22.04
     runs-on: ${{ matrix.runner }}
     steps:
-      # 1. 拉取代码+子模块
+      # 1. 拉取代码（完全不处理子模块）
       - name: Checkout code
         if: ${{ matrix.platform == 'android' }}
         uses: actions/checkout@v4
         with:
-          submodules: recursive
           fetch-depth: 0
 
-      # 2. 强制同步并更新所有嵌套子模块（解决openssl-cmake缺失）
-      - name: Force Sync and Update Submodules
+      # 2. 手动克隆openssl-cmake（彻底绕过子模块）
+      - name: Manual Clone openssl-cmake
         if: ${{ matrix.platform == 'android' }}
         run: |
-          git submodule sync --recursive
-          git submodule update --init --recursive --force
+          mkdir -p 3rdparty
+          # 直接从官方仓库克隆
           if [ ! -d "3rdparty/openssl-cmake" ]; then
-            echo "Error: openssl-cmake submodule not found!"
-            exit 1
+            git clone https://github.com/openssl/openssl.git 3rdparty/openssl-cmake
           fi
-          echo "Success: openssl-cmake submodule is present."
+          echo "Success: openssl-cmake directory is ready."
 
       # 3. 配置Java环境
       - name: Setup Java 17
