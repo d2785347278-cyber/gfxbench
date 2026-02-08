@@ -67,7 +67,7 @@ jobs:
           # 配置ccache加速（官方提到NDK支持）
           echo "NDK_CCACHE=$(which ccache)" >> $GITHUB_ENV
 
-      # 3. 安装官方指定版本的Android SDK/NDK（核心步骤）
+      # 3. 安装官方指定版本的Android SDK/NDK（修复许可接受管道破裂问题）
       - name: Install Android SDK/NDK (Official Versions)
         if: ${{ matrix.platform == 'android' }}
         run: |
@@ -81,8 +81,8 @@ jobs:
           unzip -q cmdline-tools.zip -d $ANDROID_HOME/cmdline-tools
           mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest
 
-          # 非交互模式接受所有SDK许可
-          yes | sdkmanager --licenses > /dev/null 2>&1
+          # 修复：显式输入7次"y"接受所有许可（避免管道破裂）
+          echo -ne "y\ny\ny\ny\ny\ny\n" | sdkmanager --licenses > /dev/null 2>&1
 
           # 安装官方要求的所有组件
           sdkmanager --install \
@@ -158,6 +158,10 @@ jobs:
           name: GFXBench-Android-ARM64-APK-${{ github.run_id }}
           # 匹配官方APK输出目录，排除无关文件
           path: |
+            ${{ github.workspace }}/tfw-pkg/**/*.apk
+            !${{ github.workspace }}/3rdparty/**/*.apk
+          retention-days: 30  # APK保留30天
+          if-no-files-found: warn  # 未找到文件仅警告，方便排查
             ${{ github.workspace }}/tfw-pkg/**/*.apk
             !${{ github.workspace }}/3rdparty/**/*.apk
           retention-days: 30  # APK保留30天
