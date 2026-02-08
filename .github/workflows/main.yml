@@ -1,4 +1,3 @@
-
 name: Manual Build
 
 on:
@@ -159,10 +158,6 @@ jobs:
           name: GFXBench-Android-ARM64-APK-${{ github.run_id }}
           # 匹配官方APK输出目录，排除无关文件
           path: |
-            ${{ github.workspace }}/tfw-pkg/**/*.apk
-            !${{ github.workspace }}/3rdparty/**/*.apk
-          retention-days: 30  # APK保留30天
-          if-no-files-found: warn  # 未找到文件仅警告，方便排查
             ${{ github.workspace }}/tfw-pkg/**/*.apk
             !${{ github.workspace }}/3rdparty/**/*.apk
           retention-days: 30  # APK保留30天
