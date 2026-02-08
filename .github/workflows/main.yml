@@ -50,6 +50,9 @@ jobs:
       - name: Checkout code
         if: ${{ inputs.platform == 'both' || matrix.platform == inputs.platform }}
         uses: actions/checkout@v4
+        with:
+          submodules: recursive  # 关键修改1：递归拉取所有Git子模块（解决openssl-cmake缺失）
+          fetch-depth: 0        # 补充：拉取完整提交历史，避免子模块拉取不完整
 
       - name: Setup Java 17
         if: ${{ (matrix.platform == 'android' || matrix.platform == 'linux_wayland' || matrix.platform == 'linux_vulkan' || matrix.platform == 'linux_gl') && (inputs.platform == matrix.platform || inputs.platform == 'both') }}
@@ -147,7 +150,9 @@ jobs:
           echo "NG_CMAKE_TOOLCHAIN_FILE=$HOME/android-sdk/ndk/28.0.12674087/build/cmake/android.toolchain.cmake" >> $GITHUB_ENV
           echo "CONFIG=Release" >> $GITHUB_ENV
           echo "WORKSPACE=${{ github.workspace }}" >> $GITHUB_ENV
-          echo "BUNDLE_DATA=false" >> $GITHUB_ENV
+          echo "BUNDLE_DATA=true" >> $GITHUB_ENV  # 关键修改2：启用资源打包（完整版APK必需）
+          echo "COMMUNITY_BUILD=true" >> $GITHUB_ENV  # 关键修改2：明确启用社区完整版
+          echo "PRODUCT_ID=gfxbench" >> $GITHUB_ENV  # 关键修改2：指定完整版产品ID
           echo "MAKEFLAGS=-j$(nproc)" >> $GITHUB_ENV
           echo "ANDROID_SDK_ROOT=/tmp/android_sdk/" >> $GITHUB_ENV
           echo "PLATFORM=android" >> $GITHUB_ENV
@@ -230,7 +235,8 @@ jobs:
         if: ${{ matrix.platform == 'android' && (inputs.platform == 'android' || inputs.platform == 'both') }}
         run: |
           ./scripts/build-multiarch-apk.sh
-         # ======================== 新增：上传Android APK到Artifacts ========================
+
+      # ======================== 新增：上传Android APK到Artifacts ========================
       - name: Upload Android APK
         if: ${{ matrix.platform == 'android' && (inputs.platform == 'android' || inputs.platform == 'both') }}
         uses: actions/upload-artifact@v4
