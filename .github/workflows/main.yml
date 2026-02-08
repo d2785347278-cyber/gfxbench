@@ -230,3 +230,15 @@ jobs:
         if: ${{ matrix.platform == 'android' && (inputs.platform == 'android' || inputs.platform == 'both') }}
         run: |
           ./scripts/build-multiarch-apk.sh
+         # ======================== 新增：上传Android APK到Artifacts ========================
+      - name: Upload Android APK
+        if: ${{ matrix.platform == 'android' && (inputs.platform == 'android' || inputs.platform == 'both') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: GFXBench-Android-APK-${{ github.run_id }}  # 加run_id避免文件名重复
+          # 覆盖GFXBench APK可能生成的所有路径（适配build-multiarch-apk.sh的输出）
+          path: |
+            ${{ github.workspace }}/**/*.apk
+            !${{ github.workspace }}/3rdparty/**/*.apk  # 排除第三方依赖里的无关APK
+          retention-days: 30  # APK保留30天，可修改（最大90天）
+          if-no-files-found: warn  # 没找到APK时仅警告，不中断流程
