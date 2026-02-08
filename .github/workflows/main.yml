@@ -17,6 +17,7 @@ env:
   ANDROID_NDK_VERSION: '28.0.12674087'
   ANDROID_API_LEVEL: '35'
   ANDROID_BUILD_TOOLS: '35.0.0'
+  CMAKE_VERSION: '3.21.0'  # 官方测试版本
 
 jobs:
   build:
@@ -27,21 +28,11 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
     
-    # 2. 显示当前有什么文件（方便调试）
-    - name: Show files
-      run: |
-        echo "📁 当前目录内容:"
-        ls -la
-        echo ""
-        echo "📂 scripts目录:"
-        ls -la scripts/ || echo "scripts目录不存在"
-    
-    # 3. 安装基本工具（修复版）
+    # 2. 安装基本工具（确保CMake 3.21）
     - name: Setup basic tools
       run: |
         sudo apt-get update
         sudo apt-get install -y \
-          cmake \
           ninja-build \
           swig \
           ccache \
@@ -52,12 +43,19 @@ jobs:
           zip \
           git
         
-        # 安装官方要求的CMake 3.21
-        echo "📦 安装CMake 3.21（官方要求）..."
-        wget -q https://github.com/Kitware/CMake/releases/download/v3.21.0/cmake-3.21.0-linux-x86_64.tar.gz
-        tar -xzf cmake-3.21.0-linux-x86_64.tar.gz
-        sudo cp -r cmake-3.21.0-linux-x86_64/* /usr/
-        rm -rf cmake-3.21.0-linux-x86_64*
+        # 移除可能存在的CMake高版本（如果已经安装）
+        sudo apt-get remove -y cmake cmake-data 2>/dev/null || true
+        
+        # 下载并安装官方要求的CMake 3.21
+        echo "📦 安装CMake ${{ env.CMAKE_VERSION }}（官方要求）..."
+        wget -q https://github.com/Kitware/CMake/releases/download/v${{ env.CMAKE_VERSION }}/cmake-${{ env.CMAKE_VERSION }}-linux-x86_64.tar.gz
+        tar -xzf cmake-${{ env.CMAKE_VERSION }}-linux-x86_64.tar.gz
+        
+        # 将CMake安装到/usr/local
+        sudo cp -r cmake-${{ env.CMAKE_VERSION }}-linux-x86_64/* /usr/local/
+        
+        # 清理
+        rm -rf cmake-${{ env.CMAKE_VERSION }}-linux-x86_64*
         
         # 验证版本
         echo "✅ 工具版本:"
@@ -65,9 +63,8 @@ jobs:
         swig -version
         java -version
     
-    # 4. 安装Android SDK和NDK（修复版）
-    - name: Install Android SDK/NDK (Fixed)
-      id: android-setup
+    # 3. 安装Android SDK和NDK
+    - name: Install Android SDK/NDK
       run: |
         echo "🔧 安装Android开发环境..."
         
@@ -79,34 +76,23 @@ jobs:
         echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> $GITHUB_ENV
         echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
         
-        # 方法1：直接下载命令行工具到正确位置
-        echo "⬇️ 下载Android命令行工具..."
-        
-        # 创建临时目录
-        mkdir -p /tmp/android-cmdline
-        cd /tmp/android-cmdline
-        
         # 下载命令行工具
-        wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
-        unzip -q commandlinetools-linux-11076708_latest.zip
+        echo "⬇️ 下载Android命令行工具..."
+        wget -q https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -O cmdline-tools.zip
         
-        # 移动到正确位置
+        # 创建目标目录
         mkdir -p "$ANDROID_SDK_ROOT/cmdline-tools"
-        mv cmdline-tools "$ANDROID_SDK_ROOT/cmdline-tools/latest"
         
-        # 清理临时目录
-        cd ~
-        rm -rf /tmp/android-cmdline
+        # 直接解压到目标位置
+        unzip -q cmdline-tools.zip -d "$ANDROID_SDK_ROOT/cmdline-tools"
+        
+        # 重命名解压出的目录为latest
+        mv "$ANDROID_SDK_ROOT/cmdline-tools/cmdline-tools" "$ANDROID_SDK_ROOT/cmdline-tools/latest"
         
         # 添加到PATH
         echo "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
-        echo "$ANDROID_SDK_ROOT/platform-tools" >> $GITHUB_PATH
         
-        # 验证sdkmanager可用
-        echo "🔍 验证Android工具..."
-        ls -la "$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/"
-        
-        # 接受许可证（非交互模式）
+        # 接受许可证
         echo "📝 接受Android许可证..."
         yes | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager --licenses || true
         
@@ -129,7 +115,7 @@ jobs:
         echo "✅ Android环境安装完成"
         echo "ANDROID_NDK路径: $ANDROID_NDK"
     
-    # 5. 修复常见问题
+    # 4. 修复常见问题
     - name: Fix common issues
       run: |
         echo "🔧 修复常见问题..."
@@ -149,14 +135,12 @@ jobs:
         echo "📋 检查构建脚本:"
         if [ -f "scripts/build-3rdparty.sh" ]; then
           echo "✅ 找到 build-3rdparty.sh"
-          ls -la scripts/build-3rdparty.sh
         else
           echo "❌ 缺少 build-3rdparty.sh"
-          echo "当前scripts目录:"
-          ls -la scripts/ 2>/dev/null || echo "scripts目录不存在"
+          exit 1
         fi
     
-    # 6. 执行官方构建步骤
+    # 5. 执行官方构建步骤
     - name: Run official build steps
       env:
         PLATFORM: ${{ github.event.inputs.build_arch }}
@@ -180,17 +164,10 @@ jobs:
         
         # 第一步：构建第三方库
         echo "📦 第一步：构建第三方库"
-        
-        # 确保在项目根目录
         cd "$WORKSPACE"
         
         if [ -f "scripts/build-3rdparty.sh" ]; then
-          # 显示脚本内容前几行（调试）
-          echo "📜 构建脚本前10行:"
-          head -10 scripts/build-3rdparty.sh
-          
           # 执行构建
-          echo "▶️ 执行 build-3rdparty.sh"
           bash scripts/build-3rdparty.sh
           
           if [ $? -eq 0 ]; then
@@ -208,12 +185,7 @@ jobs:
         echo "📱 第二步：构建主程序"
         
         if [ -f "scripts/build.sh" ]; then
-          # 显示脚本内容前几行（调试）
-          echo "📜 构建脚本前10行:"
-          head -10 scripts/build.sh
-          
           # 执行构建
-          echo "▶️ 执行 build.sh"
           bash scripts/build.sh
           
           if [ $? -eq 0 ]; then
@@ -238,7 +210,7 @@ jobs:
         echo "📁 检查输出目录:"
         find . -type d -name "tfw*" -o -name "out" 2>/dev/null | head -5
     
-    # 7. 上传生成的APK
+    # 6. 上传生成的APK
     - name: Upload APK artifact
       if: success()
       uses: actions/upload-artifact@v4
